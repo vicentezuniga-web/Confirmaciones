@@ -101,4 +101,73 @@ def procesar_archivo_innova(df: pd.DataFrame) -> dict:
 
 def dataframes_a_zip(dfs_por_sociedad: dict, prefijo_nombre: str) -> bytes:
     """
-    Cr
+    Crea un ZIP en memoria con 1 Excel por sociedad.
+    """
+    zip_buffer = BytesIO()
+    now_str = datetime.now(CL_TZ).strftime("%Y_%m_%d_%H_%M_%S")
+
+    with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for sociedad, df_soc in dfs_por_sociedad.items():
+            excel_bytes = BytesIO()
+            with pd.ExcelWriter(excel_bytes, engine="xlsxwriter") as writer:
+                df_soc.to_excel(writer, index=False, sheet_name="Datos")
+            excel_bytes.seek(0)
+            nombre = f"{prefijo_nombre}_{sociedad}_{now_str}.xlsx"
+            zf.writestr(nombre, excel_bytes.read())
+
+    zip_buffer.seek(0)
+    return zip_buffer.getvalue()
+
+# ---------------------------
+# Interfaz Streamlit
+# ---------------------------
+st.set_page_config(page_title="Procesador archivos de confirmación", page_icon="📄", layout="centered")
+st.title("Procesador de archivos de confirmación")
+st.caption("Genera archivos por sociedad y descarga un ZIP listo para enviar.")
+
+with st.expander("📘 Instrucciones rápidas"):
+    st.markdown(
+        "- **Saesa**: Debe incluir las columnas: Acreedor, Clase de documento, Referencia, Importe en moneda local, Vencimiento neto y Sociedad.\n"
+        "- **Innova**: Misma estructura, pero limpia la *Referencia* antes del punto.\n"
+        "- El ZIP contiene 1 Excel por **Sociedad**.\n"
+        "- Las fechas se formatean a **dd-mm-YYYY** y los montos quedan como enteros positivos.\n"
+        "- Se eliminan los `.0` al final de los folios numéricos."
+    )
+
+# --- Sección Saesa ---
+st.header("Procesar archivo Saesa")
+archivo_saesa = st.file_uploader("Sube archivo Saesa (.xlsx / .xls)", type=["xlsx", "xls"], key="saesa")
+
+if archivo_saesa is not None:
+    try:
+        df_saesa = pd.read_excel(archivo_saesa)
+        dfs_soc_saesa = procesar_archivo(df_saesa)
+        zip_bytes = dataframes_a_zip(dfs_soc_saesa, "Data")
+        st.download_button(
+            label="📦 Descargar ZIP Saesa",
+            data=zip_bytes,
+            file_name="archivos_confirmacion_saesa.zip",
+            mime="application/zip",
+        )
+        st.success(f"Listo ✅ Se generaron {len(dfs_soc_saesa)} archivo(s) por sociedad.")
+    except Exception as e:
+        st.error(f"Error procesando Saesa: {e}")
+
+# --- Sección Innova ---
+st.header("Procesar archivo Innova")
+archivo_innova = st.file_uploader("Sube archivo Innova (.xlsx / .xls)", type=["xlsx", "xls"], key="innova")
+
+if archivo_innova is not None:
+    try:
+        df_innova = pd.read_excel(archivo_innova)
+        dfs_soc_innova = procesar_archivo_innova(df_innova)
+        zip_bytes = dataframes_a_zip(dfs_soc_innova, "Data_Innova")
+        st.download_button(
+            label="📦 Descargar ZIP Innova",
+            data=zip_bytes,
+            file_name="archivos_confirmacion_innova.zip",
+            mime="application/zip",
+        )
+        st.success(f"Listo ✅ Se generaron {len(dfs_soc_innova)} archivo(s) por sociedad.")
+    except Exception as e:
+        st.error(f"Error procesando Innova: {e}")
