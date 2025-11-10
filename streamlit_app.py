@@ -19,6 +19,21 @@ REQ_COLS_BASE = {
     "Sociedad",
 }
 
+SOCIEDADES_PARAUCO = {
+    "Arauco Centros Comerciales Regionales SPA",
+    "Arauco Chillán SPA",
+    "Arauco Malls Chile S.A.",
+    "Bulevar Rentas Inmobiliarias S.A.",
+    "Centros Comerciales Vecinales Arauco Express S.A.",
+    "Desarrollos Inmobiliarios San Antonio S.A.",
+    "Inmob. Paseo Estacion",
+    "Inversiones Arauco Spa.",
+    "Parque Angamos SPA",
+    "Parque Arauco S.A.",
+    "Plaza Estación S.A.",
+    "Todo Arauco S.A.",
+}
+
 # ---------------------------
 # Funciones auxiliares
 # ---------------------------
@@ -78,7 +93,7 @@ def dataframes_a_zip(dfs_por_sociedad: dict, prefijo_nombre: str) -> bytes:
     return zip_buffer.getvalue()
 
 # ---------------------------
-# Procesadores existentes
+# Procesadores existentes (Saesa, Innova)
 # ---------------------------
 def procesar_archivo(df: pd.DataFrame) -> dict:
     validar_columnas(df, REQ_COLS_BASE)
@@ -120,60 +135,59 @@ def procesar_archivo_innova(df: pd.DataFrame) -> dict:
     return procesar_archivo(df)
 
 # ---------------------------
-# NUEVO: Procesar Archivo Parauco
+# NUEVO: Procesar Archivo Parauco (1 archivo por sociedad detectada en columna L)
 # ---------------------------
 def procesar_archivo_parauco(df: pd.DataFrame) -> dict:
     """
-    Regla:
-    - Filtrar filas donde la columna L (índice 11) == 'Parque Arauco S.A.'.
+    Reglas:
+    - Usar la COLUMNA L (posición 11, 0-based) como 'Sociedad origen'.
+    - Considerar solo filas donde L esté en el set SOCIEDADES_PARAUCO.
     - Mapear columnas por índice:
-        G (6) -> A (Rut emisor)
-        D (3) -> C (Folio)
-        C (2) -> D (Monto a pagar)
-        E (4) -> E (Fecha a pagar)
-    - Tipo de Documento = "33"
-    - Si existe 'Sociedad' en el archivo, agrupar por esa columna; si no, generar un único archivo 'Parauco'.
+        G (6) -> "Rut emisor"
+        D (3) -> "Folio"
+        C (2) -> "Monto a pagar"
+        E (4) -> "Fecha a pagar"
+    - "Tipo de Documento" fijo: "33"
+    - Generar un archivo por cada valor único de L encontrado (sociedad).
     """
-    # Validación de cantidad mínima de columnas para acceder por índice (hasta L => índice 11)
+    # Validar que exista la columna L (índice 11)
     if df.shape[1] <= 11:
         raise ValueError("El archivo no tiene suficientes columnas (se espera al menos hasta la columna L).")
 
-    # Acceso por posición
-    col_C = df.iloc[:, 2]   # C
-    col_D = df.iloc[:, 3]   # D
-    col_E = df.iloc[:, 4]   # E
-    col_G = df.iloc[:, 6]   # G
-    col_L = df.iloc[:, 11]  # L
+    # Tomar columnas por posición
+    col_C = df.iloc[:, 2]   # C -> Monto a pagar
+    col_D = df.iloc[:, 3]   # D -> Folio
+    col_E = df.iloc[:, 4]   # E -> Fecha a pagar
+    col_G = df.iloc[:, 6]   # G -> Rut emisor
+    col_L = df.iloc[:, 11]  # L -> Sociedad origen Parauco
 
-    # Filtrar por L == "Parque Arauco S.A."
-    mask = col_L.astype(str).str.strip() == "Parque Arauco S.A."
+    # Normalizar L para comparar exacto con el set
+    col_L_norm = col_L.astype(str).str.strip()
+
+    # Filtrar solo las sociedades del set
+    mask = col_L_norm.isin(SOCIEDADES_PARAUCO)
     df_f = df.loc[mask].copy()
     if df_f.empty:
-        raise ValueError("No se encontraron filas con 'Parque Arauco S.A.' en la columna L.")
+        raise ValueError("No se encontraron filas con sociedades Parauco válidas en la columna L.")
 
-    # Construir DataFrame de salida con headers iguales a los otros
-    out = pd.DataFrame({
+    # Construir salida y agrupar por L (sociedad)
+    out_base = pd.DataFrame({
         "Rut emisor": col_G.loc[mask].astype(str).str.strip(),
-        "Tipo de Documento": "33",  # fijo según requerimiento de salida
+        "Tipo de Documento": "33",
         "Folio": limpiar_folio_series(col_D.loc[mask]),
         "Monto a pagar": normalizar_monto(col_C.loc[mask]),
         "Fecha a pagar": formatear_fecha_series(col_E.loc[mask]),
+        "Sociedad_Origen_L": col_L_norm.loc[mask].values,  # para agrupar
     })
 
     # Montos como enteros positivos
-    out["Monto a pagar"] = pd.to_numeric(out["Monto a pagar"], errors="coerce").fillna(0).abs().astype(int)
+    out_base["Monto a pagar"] = pd.to_numeric(out_base["Monto a pagar"], errors="coerce").fillna(0).abs().astype(int)
 
-    # Agrupar por 'Sociedad' si existe; si no, un único archivo
+    # Generar un archivo por cada sociedad detectada en L
     archivos_por_sociedad = {}
-    if "Sociedad" in df.columns:
-        sociedad_vals = df.loc[mask, "Sociedad"].astype(str).fillna("SinSociedad")
-        out_with_soc = out.copy()
-        out_with_soc["Sociedad"] = sociedad_vals.values
-        for sociedad, grupo in out_with_soc.groupby("Sociedad", dropna=False):
-            sub = grupo[["Rut emisor", "Tipo de Documento", "Folio", "Monto a pagar", "Fecha a pagar"]].copy()
-            archivos_por_sociedad[str(sociedad)] = sub
-    else:
-        archivos_por_sociedad["Parauco"] = out
+    for sociedad_l, grupo in out_base.groupby("Sociedad_Origen_L", dropna=False):
+        sub = grupo[["Rut emisor", "Tipo de Documento", "Folio", "Monto a pagar", "Fecha a pagar"]].copy()
+        archivos_por_sociedad[str(sociedad_l)] = sub
 
     return archivos_por_sociedad
 
@@ -188,8 +202,8 @@ with st.expander("📘 Instrucciones rápidas"):
     st.markdown(
         "- **Saesa**: Debe incluir las columnas: Acreedor, Clase de documento, Referencia, Importe en moneda local, Vencimiento neto y Sociedad.\n"
         "- **Innova**: Misma estructura, pero limpia la *Referencia* antes del punto.\n"
-        "- **Parauco**: Sube el Excel; se filtrará por columna **L** = 'Parque Arauco S.A.' y se mapearán columnas G→A (Rut), D→C (Folio), C→D (Monto), E→E (Fecha).\n"
-        "- El ZIP contiene 1 Excel por **Sociedad** cuando aplique.\n"
+        "- **Parauco**: Se usará la columna **L** para identificar la sociedad de origen. Se crearán archivos separados por cada sociedad detectada del listado provisto.\n"
+        "- El ZIP contiene 1 Excel por **Sociedad**.\n"
         "- Fechas en **dd-mm-YYYY**, montos enteros positivos, y folios sin sufijo `.0`."
     )
 
@@ -246,6 +260,6 @@ if archivo_parauco is not None:
             file_name="archivos_confirmacion_parauco.zip",
             mime="application/zip",
         )
-        st.success(f"Listo ✅ Se generaron {len(dfs_soc_parauco)} archivo(s).")
+        st.success(f"Listo ✅ Se generaron {len(dfs_soc_parauco)} archivo(s) (uno por sociedad en columna L).")
     except Exception as e:
         st.error(f"Error procesando Parauco: {e}")
