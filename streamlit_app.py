@@ -67,7 +67,6 @@ def normalizar_monto(s: pd.Series) -> pd.Series:
     return (
         s.astype(str).str.replace(".", "", regex=False)
          .str.replace(",", ".", regex=False)  # por si viene con coma decimal
-         .astype(float, errors="ignore")
     )
 
 def formatear_fecha_series(s: pd.Series) -> pd.Series:
@@ -93,15 +92,33 @@ def dataframes_a_zip(dfs_por_sociedad: dict, prefijo_nombre: str) -> bytes:
     return zip_buffer.getvalue()
 
 # ---------------------------
-# Procesadores existentes (Saesa, Innova)
+# Procesadores (Saesa, Innova)
 # ---------------------------
 def procesar_archivo(df: pd.DataFrame) -> dict:
     validar_columnas(df, REQ_COLS_BASE)
+    df = df.copy()
+
+    # ✅ SAESA: excluir filas sin dato en columna D (Referencia)
+    ref = df["Referencia"]
+    mask_ref_valida = (
+        ref.notna()
+        & ref.astype(str).str.strip().ne("")
+        & ref.astype(str).str.strip().str.lower().ne("nan")
+    )
+    df = df.loc[mask_ref_valida].copy()
+
+    # Si después del filtro no queda nada, cortar
+    if df.empty:
+        raise ValueError("No hay filas válidas: todas las filas tienen 'Referencia' vacía o inválida.")
 
     # "Referencia" limpia (columna D origen en tus archivos Saesa)
     df["Referencia"] = df["Referencia"].astype(str)
     df = df[~df["Referencia"].str.contains("-", na=False)]
     df["Referencia"] = limpiar_folio_series(df["Referencia"])
+
+    # Si al remover guiones también queda vacío
+    if df.empty:
+        raise ValueError("No hay filas válidas después de filtrar referencias con '-'.")
 
     columnas_nuevas = {
         "Acreedor": "Rut emisor",
@@ -117,13 +134,29 @@ def procesar_archivo(df: pd.DataFrame) -> dict:
         axis=1,
     )
 
-    df["Monto a pagar"] = normalizar_monto(df["Monto a pagar"]).abs().astype(int, errors="ignore")
+    # Montos -> numérico entero positivo (robusto)
+    df["Monto a pagar"] = pd.to_numeric(
+        normalizar_monto(df["Monto a pagar"]),
+        errors="coerce"
+    ).fillna(0).abs().astype(int)
+
     df["Fecha a pagar"] = formatear_fecha_series(df["Fecha a pagar"])
 
+    # ✅ Solo generar archivos para sociedades con al menos 1 fila
     archivos_por_sociedad = {}
     for sociedad, grupo in df.groupby("Sociedad", dropna=False):
+        if grupo.empty:
+            continue
         sub = grupo[["Rut emisor", "Tipo de Documento", "Folio", "Monto a pagar", "Fecha a pagar"]].copy()
+
+        # refuerzo: si por algún motivo sub queda vacío, no lo agregues
+        if sub.empty:
+            continue
+
         archivos_por_sociedad[str(sociedad)] = sub
+
+    if not archivos_por_sociedad:
+        raise ValueError("No se generaron archivos: ninguna sociedad tiene filas válidas tras los filtros.")
 
     return archivos_por_sociedad
 
@@ -135,7 +168,7 @@ def procesar_archivo_innova(df: pd.DataFrame) -> dict:
     return procesar_archivo(df)
 
 # ---------------------------
-# NUEVO: Procesar Archivo Parauco (1 archivo por sociedad detectada en columna L)
+# Procesar Archivo Parauco
 # ---------------------------
 def procesar_archivo_parauco(df: pd.DataFrame) -> dict:
     """
@@ -150,44 +183,44 @@ def procesar_archivo_parauco(df: pd.DataFrame) -> dict:
     - "Tipo de Documento" fijo: "33"
     - Generar un archivo por cada valor único de L encontrado (sociedad).
     """
-    # Validar que exista la columna L (índice 11)
     if df.shape[1] <= 11:
         raise ValueError("El archivo no tiene suficientes columnas (se espera al menos hasta la columna L).")
 
-    # Tomar columnas por posición
     col_C = df.iloc[:, 2]   # C -> Monto a pagar
     col_D = df.iloc[:, 3]   # D -> Folio
     col_E = df.iloc[:, 4]   # E -> Fecha a pagar
     col_G = df.iloc[:, 6]   # G -> Rut emisor
     col_L = df.iloc[:, 11]  # L -> Sociedad origen Parauco
 
-    # Normalizar L para comparar exacto con el set
     col_L_norm = col_L.astype(str).str.strip()
-
-    # Filtrar solo las sociedades del set
     mask = col_L_norm.isin(SOCIEDADES_PARAUCO)
+
     df_f = df.loc[mask].copy()
     if df_f.empty:
         raise ValueError("No se encontraron filas con sociedades Parauco válidas en la columna L.")
 
-    # Construir salida y agrupar por L (sociedad)
     out_base = pd.DataFrame({
         "Rut emisor": col_G.loc[mask].astype(str).str.strip(),
         "Tipo de Documento": "33",
         "Folio": limpiar_folio_series(col_D.loc[mask]),
-        "Monto a pagar": normalizar_monto(col_C.loc[mask]),
+        "Monto a pagar": pd.to_numeric(normalizar_monto(col_C.loc[mask]), errors="coerce"),
         "Fecha a pagar": formatear_fecha_series(col_E.loc[mask]),
-        "Sociedad_Origen_L": col_L_norm.loc[mask].values,  # para agrupar
+        "Sociedad_Origen_L": col_L_norm.loc[mask].values,
     })
 
-    # Montos como enteros positivos
-    out_base["Monto a pagar"] = pd.to_numeric(out_base["Monto a pagar"], errors="coerce").fillna(0).abs().astype(int)
+    out_base["Monto a pagar"] = out_base["Monto a pagar"].fillna(0).abs().astype(int)
 
-    # Generar un archivo por cada sociedad detectada en L
     archivos_por_sociedad = {}
     for sociedad_l, grupo in out_base.groupby("Sociedad_Origen_L", dropna=False):
+        if grupo.empty:
+            continue
         sub = grupo[["Rut emisor", "Tipo de Documento", "Folio", "Monto a pagar", "Fecha a pagar"]].copy()
+        if sub.empty:
+            continue
         archivos_por_sociedad[str(sociedad_l)] = sub
+
+    if not archivos_por_sociedad:
+        raise ValueError("No se generaron archivos Parauco: ninguna sociedad tiene filas válidas.")
 
     return archivos_por_sociedad
 
@@ -201,6 +234,7 @@ st.caption("Genera archivos por sociedad y descarga un ZIP listo para enviar.")
 with st.expander("📘 Instrucciones rápidas"):
     st.markdown(
         "- **Saesa**: Debe incluir las columnas: Acreedor, Clase de documento, Referencia, Importe en moneda local, Vencimiento neto y Sociedad.\n"
+        "- **Saesa (ajuste)**: filas con **Referencia vacía** no se consideran y no generan sociedades/archivos.\n"
         "- **Innova**: Misma estructura, pero limpia la *Referencia* antes del punto.\n"
         "- **Parauco**: Se usará la columna **L** para identificar la sociedad de origen. Se crearán archivos separados por cada sociedad detectada del listado provisto.\n"
         "- El ZIP contiene 1 Excel por **Sociedad**.\n"
@@ -215,6 +249,7 @@ if archivo_saesa is not None:
     try:
         df_saesa = pd.read_excel(archivo_saesa)
         dfs_soc_saesa = procesar_archivo(df_saesa)
+
         zip_bytes = dataframes_a_zip(dfs_soc_saesa, "Data")
         st.download_button(
             label="📦 Descargar ZIP Saesa",
@@ -234,6 +269,7 @@ if archivo_innova is not None:
     try:
         df_innova = pd.read_excel(archivo_innova)
         dfs_soc_innova = procesar_archivo_innova(df_innova)
+
         zip_bytes = dataframes_a_zip(dfs_soc_innova, "Data_Innova")
         st.download_button(
             label="📦 Descargar ZIP Innova",
@@ -245,7 +281,7 @@ if archivo_innova is not None:
     except Exception as e:
         st.error(f"Error procesando Innova: {e}")
 
-# --- NUEVA Sección Parauco ---
+# --- Sección Parauco ---
 st.header("Procesar Archivo Parauco")
 archivo_parauco = st.file_uploader("Sube archivo Parauco (.xlsx / .xls)", type=["xlsx", "xls"], key="parauco")
 
@@ -253,6 +289,7 @@ if archivo_parauco is not None:
     try:
         df_parauco = pd.read_excel(archivo_parauco, header=0)
         dfs_soc_parauco = procesar_archivo_parauco(df_parauco)
+
         zip_bytes = dataframes_a_zip(dfs_soc_parauco, "Data_Parauco")
         st.download_button(
             label="📦 Descargar ZIP Parauco",
