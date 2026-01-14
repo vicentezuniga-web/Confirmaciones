@@ -34,6 +34,22 @@ SOCIEDADES_PARAUCO = {
     "Todo Arauco S.A.",
 }
 
+# SAESA: letra sociedad -> RUT
+SAESA_SOCIEDAD_A_RUT = {
+    "D": "76519747-3",
+    "E": "88272600-2",
+    "F": "76073164-1",
+    "G": "77708654-5",
+    "L": "96531500-4",
+    "S": "76073162-5",
+    "T": "77312201-6",
+}
+
+# INNOVA: letra sociedad -> RUT
+INNOVA_SOCIEDAD_A_RUT = {
+    "P": "77227565-K",
+}
+
 # ---------------------------
 # Helpers
 # ---------------------------
@@ -73,6 +89,18 @@ def normalizar_monto(s: pd.Series) -> pd.Series:
 def formatear_fecha_series(s: pd.Series) -> pd.Series:
     return pd.to_datetime(s, errors="coerce").dt.strftime("%d-%m-%Y")
 
+def normalizar_rut(valor) -> str:
+    """
+    76.939.541-5 -> 76939541-5
+    ' 76073164 - 1 ' -> 76073164-1
+    """
+    s = "" if pd.isna(valor) else str(valor)
+    s = s.strip()
+    s = s.replace(".", "")
+    s = s.replace(" ", "")
+    s = s.upper()
+    return s
+
 def dataframes_a_zip(dfs_por_sociedad: dict, prefijo_nombre: str) -> bytes:
     """Crea un ZIP en memoria con 1 Excel por sociedad."""
     zip_buffer = BytesIO()
@@ -91,86 +119,11 @@ def dataframes_a_zip(dfs_por_sociedad: dict, prefijo_nombre: str) -> bytes:
     return zip_buffer.getvalue()
 
 def dataframe_a_excel_bytes(df: pd.DataFrame, sheet_name: str = "Datos") -> bytes:
-    """Crea un Excel único en memoria."""
     excel_bytes = BytesIO()
     with pd.ExcelWriter(excel_bytes, engine="xlsxwriter") as writer:
         df.to_excel(writer, index=False, sheet_name=sheet_name)
     excel_bytes.seek(0)
     return excel_bytes.getvalue()
-
-# ---------------------------
-# Core SAESA/INNOVA: genera DF "base" estandarizado
-# ---------------------------
-def construir_base_saesa(df: pd.DataFrame) -> pd.DataFrame:
-    """Devuelve DF estandarizado con columnas:
-    Sociedad, Rut emisor, Tipo de Documento, Folio, Monto a pagar, Fecha a pagar
-    """
-    validar_columnas(df, REQ_COLS_BASE)
-    df = df.copy()
-
-    # ✅ Excluir filas sin dato en Referencia
-    ref = df["Referencia"]
-    mask_ref_valida = (
-        ref.notna()
-        & ref.astype(str).str.strip().ne("")
-        & ref.astype(str).str.strip().str.lower().ne("nan")
-    )
-    df = df.loc[mask_ref_valida].copy()
-
-    if df.empty:
-        raise ValueError("No hay filas válidas: todas las filas tienen 'Referencia' vacía o inválida.")
-
-    # Limpiar referencia / folio
-    df["Referencia"] = df["Referencia"].astype(str)
-    df = df[~df["Referencia"].str.contains("-", na=False)]
-    df["Referencia"] = limpiar_folio_series(df["Referencia"])
-
-    if df.empty:
-        raise ValueError("No hay filas válidas después de filtrar referencias con '-'.")
-
-    # Renombrar a formato target
-    columnas_nuevas = {
-        "Acreedor": "Rut emisor",
-        "Clase de documento": "Tipo de Documento",
-        "Referencia": "Folio",
-        "Importe en moneda local": "Monto a pagar",
-        "Vencimiento neto": "Fecha a pagar",
-    }
-    df = df.rename(columns=columnas_nuevas)
-
-    # Tipo documento según reglas
-    df["Tipo de Documento"] = df.apply(
-        lambda row: transformar_tipo(str(row["Tipo de Documento"]), str(row["Rut emisor"])),
-        axis=1,
-    )
-
-    # Montos robustos
-    df["Monto a pagar"] = pd.to_numeric(
-        normalizar_monto(df["Monto a pagar"]),
-        errors="coerce"
-    ).fillna(0).abs().astype(int)
-
-    df["Fecha a pagar"] = formatear_fecha_series(df["Fecha a pagar"])
-
-    out = df[["Sociedad", "Rut emisor", "Tipo de Documento", "Folio", "Monto a pagar", "Fecha a pagar"]].copy()
-
-    # Limpieza extra: evitar filas sin rut/folio
-    out = out[
-        out["Rut emisor"].astype(str).str.strip().ne("")
-        & out["Folio"].astype(str).str.strip().ne("")
-    ].copy()
-
-    if out.empty:
-        raise ValueError("No se generó salida: quedó vacío tras los filtros/limpieza.")
-    return out
-
-def construir_base_innova(df: pd.DataFrame) -> pd.DataFrame:
-    if "Referencia" not in df.columns:
-        raise ValueError("El archivo de Innova debe contener la columna 'Referencia'.")
-    df = df.copy()
-    # limpia antes del punto
-    df["Referencia"] = df["Referencia"].astype(str).str.split(".").str[0]
-    return construir_base_saesa(df)
 
 def base_a_dict_por_sociedad(base: pd.DataFrame, col_sociedad: str = "Sociedad") -> dict:
     """Convierte base a dict{sociedad: df_salida_sin_col_sociedad}"""
@@ -184,21 +137,116 @@ def base_a_dict_por_sociedad(base: pd.DataFrame, col_sociedad: str = "Sociedad")
     return out
 
 # ---------------------------
-# PARQUE ARAUCO: base unificada + por sociedad(L)
+# Builder SAESA-like base (sin mapping)
+# ---------------------------
+def construir_base_saesa_like_sin_mapping(df: pd.DataFrame) -> pd.DataFrame:
+    """Devuelve DF estandarizado con columnas:
+    Sociedad, Rut emisor, Tipo de Documento, Folio, Monto a pagar, Fecha a pagar
+    SIN aplicar reemplazo de Sociedad (eso se hace afuera por tipo de archivo).
+    """
+    validar_columnas(df, REQ_COLS_BASE)
+    df = df.copy()
+
+    # Excluir filas sin referencia
+    ref = df["Referencia"]
+    mask_ref_valida = (
+        ref.notna()
+        & ref.astype(str).str.strip().ne("")
+        & ref.astype(str).str.strip().str.lower().ne("nan")
+    )
+    df = df.loc[mask_ref_valida].copy()
+    if df.empty:
+        raise ValueError("No hay filas válidas: todas las filas tienen 'Referencia' vacía o inválida.")
+
+    df["Referencia"] = df["Referencia"].astype(str)
+    df = df[~df["Referencia"].str.contains("-", na=False)]
+    df["Referencia"] = limpiar_folio_series(df["Referencia"])
+    if df.empty:
+        raise ValueError("No hay filas válidas después de filtrar referencias con '-'.")
+
+    columnas_nuevas = {
+        "Acreedor": "Rut emisor",
+        "Clase de documento": "Tipo de Documento",
+        "Referencia": "Folio",
+        "Importe en moneda local": "Monto a pagar",
+        "Vencimiento neto": "Fecha a pagar",
+    }
+    df = df.rename(columns=columnas_nuevas)
+
+    df["Tipo de Documento"] = df.apply(
+        lambda row: transformar_tipo(str(row["Tipo de Documento"]), str(row["Rut emisor"])),
+        axis=1,
+    )
+
+    df["Monto a pagar"] = pd.to_numeric(
+        normalizar_monto(df["Monto a pagar"]),
+        errors="coerce"
+    ).fillna(0).abs().astype(int)
+
+    df["Fecha a pagar"] = formatear_fecha_series(df["Fecha a pagar"])
+
+    out = df[["Sociedad", "Rut emisor", "Tipo de Documento", "Folio", "Monto a pagar", "Fecha a pagar"]].copy()
+
+    out = out[
+        out["Rut emisor"].astype(str).str.strip().ne("")
+        & out["Folio"].astype(str).str.strip().ne("")
+    ].copy()
+
+    if out.empty:
+        raise ValueError("No se generó salida: quedó vacío tras filtros/limpieza.")
+    return out
+
+# ---------------------------
+# SAESA / INNOVA processors
+# ---------------------------
+def construir_base_saesa(df: pd.DataFrame) -> pd.DataFrame:
+    base = construir_base_saesa_like_sin_mapping(df)
+
+    # Sociedad letra -> RUT; inválidos se eliminan
+    base["Sociedad"] = base["Sociedad"].astype(str).str.strip().str.upper()
+    base["Sociedad"] = base["Sociedad"].map(SAESA_SOCIEDAD_A_RUT)
+    base = base[base["Sociedad"].notna()].copy()
+    base["Sociedad"] = base["Sociedad"].apply(normalizar_rut)
+
+    if base.empty:
+        raise ValueError("SAESA: no quedaron filas válidas luego de aplicar el mapping de sociedades.")
+    return base
+
+def construir_base_innova(df: pd.DataFrame) -> pd.DataFrame:
+    if "Referencia" not in df.columns:
+        raise ValueError("El archivo de Innova debe contener la columna 'Referencia'.")
+    df = df.copy()
+    df["Referencia"] = df["Referencia"].astype(str).str.split(".").str[0]
+
+    base = construir_base_saesa_like_sin_mapping(df)
+
+    # Sociedad letra -> RUT (solo P); inválidos se eliminan
+    base["Sociedad"] = base["Sociedad"].astype(str).str.strip().str.upper()
+    base["Sociedad"] = base["Sociedad"].map(INNOVA_SOCIEDAD_A_RUT)
+    base = base[base["Sociedad"].notna()].copy()
+    base["Sociedad"] = base["Sociedad"].apply(normalizar_rut)
+
+    if base.empty:
+        raise ValueError("INNOVA: no quedaron filas válidas (solo se acepta Sociedad='P').")
+    return base
+
+# ---------------------------
+# PARQUE ARAUCO processors
 # ---------------------------
 def construir_base_parauco(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Devuelve DF estandarizado con:
-    Sociedad (columna L), Rut emisor (G), Tipo Doc fijo 33, Folio (D), Monto (C), Fecha (E)
+    - Filtra por sociedades válidas en columna L (nombre).
+    - 'Sociedad' de salida viene desde columna K (RUT sociedad) y se normaliza (sin puntos).
     """
     if df.shape[1] <= 11:
         raise ValueError("El archivo no tiene suficientes columnas (se espera al menos hasta la columna L).")
 
-    col_C = df.iloc[:, 2]   # C -> Monto a pagar
-    col_D = df.iloc[:, 3]   # D -> Folio
-    col_E = df.iloc[:, 4]   # E -> Fecha a pagar
-    col_G = df.iloc[:, 6]   # G -> Rut emisor
-    col_L = df.iloc[:, 11]  # L -> Sociedad origen
+    col_C = df.iloc[:, 2]    # C -> Monto a pagar
+    col_D = df.iloc[:, 3]    # D -> Folio
+    col_E = df.iloc[:, 4]    # E -> Fecha a pagar
+    col_G = df.iloc[:, 6]    # G -> Rut emisor
+    col_K = df.iloc[:, 10]   # K -> RUT sociedad
+    col_L = df.iloc[:, 11]   # L -> Nombre sociedad (para filtrar)
 
     col_L_norm = col_L.astype(str).str.strip()
     mask = col_L_norm.isin(SOCIEDADES_PARAUCO)
@@ -206,8 +254,10 @@ def construir_base_parauco(df: pd.DataFrame) -> pd.DataFrame:
     if not mask.any():
         raise ValueError("No se encontraron filas con sociedades Parauco válidas en la columna L.")
 
+    sociedad_rut = col_K.loc[mask].apply(normalizar_rut)
+
     out = pd.DataFrame({
-        "Sociedad": col_L_norm.loc[mask].values,
+        "Sociedad": sociedad_rut.values,
         "Rut emisor": col_G.loc[mask].astype(str).str.strip(),
         "Tipo de Documento": "33",
         "Folio": limpiar_folio_series(col_D.loc[mask]),
@@ -218,12 +268,13 @@ def construir_base_parauco(df: pd.DataFrame) -> pd.DataFrame:
     out["Monto a pagar"] = out["Monto a pagar"].fillna(0).abs().astype(int)
 
     out = out[
-        out["Rut emisor"].astype(str).str.strip().ne("")
+        out["Sociedad"].astype(str).str.strip().ne("")
+        & out["Rut emisor"].astype(str).str.strip().ne("")
         & out["Folio"].astype(str).str.strip().ne("")
     ].copy()
 
     if out.empty:
-        raise ValueError("El archivo Parauco quedó vacío tras limpieza/filtros.")
+        raise ValueError("Parauco: quedó vacío tras limpieza/filtros.")
     return out
 
 # ---------------------------
@@ -235,12 +286,11 @@ st.caption("Descarga en modo unificado (1 Excel) o por sociedad (ZIP).")
 
 with st.expander("📘 Instrucciones rápidas"):
     st.markdown(
-        "- **Saesa/Innova**: columnas requeridas: Acreedor, Clase de documento, Referencia, Importe en moneda local, Vencimiento neto, Sociedad.\n"
-        "- **Saesa**: filas con **Referencia vacía** no se consideran.\n"
-        "- **Innova**: limpia 'Referencia' antes del punto y aplica reglas Saesa.\n"
-        "- **Parauco**: usa columna **L** para sociedad; solo considera sociedades del listado.\n"
-        "- **Modo Unificado** = 1 Excel con columna 'Sociedad'.\n"
-        "- **Modo Por sociedad** = ZIP con 1 Excel por sociedad."
+        "- **Saesa**: Sociedad viene como letra (D/E/F/G/L/S/T) y se reemplaza por su RUT. Si no coincide, se elimina la fila.\n"
+        "- **Innova**: Solo se acepta Sociedad = P y se reemplaza por 77227565-K. El resto se elimina.\n"
+        "- **Parauco**: Se filtra por nombre sociedad en L (lista), pero la Sociedad del output se toma de K (RUT) y se limpia (sin puntos).\n"
+        "- **Unificado**: 1 Excel con columna 'Sociedad'.\n"
+        "- **Por sociedad**: ZIP con 1 Excel por Sociedad."
     )
 
 now_str = datetime.now(CL_TZ).strftime("%Y_%m_%d_%H_%M_%S")
