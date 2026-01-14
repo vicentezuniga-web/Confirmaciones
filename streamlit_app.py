@@ -136,13 +136,24 @@ def base_a_dict_por_sociedad(base: pd.DataFrame, col_sociedad: str = "Sociedad")
         raise ValueError("No se generaron archivos por sociedad: no hay grupos con filas válidas.")
     return out
 
+def preparar_unificado(df_base: pd.DataFrame) -> pd.DataFrame:
+    """
+    Para descargas UNIFICADAS:
+    - Cambia el header 'Sociedad' a 'Rut pagadora'
+    - Mantiene el resto igual
+    """
+    out = df_base.rename(columns={"Sociedad": "Rut pagadora"}).copy()
+    # asegura orden (rut pagadora primero)
+    cols = ["Rut pagadora", "Rut emisor", "Tipo de Documento", "Folio", "Monto a pagar", "Fecha a pagar"]
+    return out[cols]
+
 # ---------------------------
 # Builder SAESA-like base (sin mapping)
 # ---------------------------
 def construir_base_saesa_like_sin_mapping(df: pd.DataFrame) -> pd.DataFrame:
     """Devuelve DF estandarizado con columnas:
     Sociedad, Rut emisor, Tipo de Documento, Folio, Monto a pagar, Fecha a pagar
-    SIN aplicar reemplazo de Sociedad (eso se hace afuera por tipo de archivo).
+    SIN aplicar reemplazo de Sociedad.
     """
     validar_columnas(df, REQ_COLS_BASE)
     df = df.copy()
@@ -286,11 +297,11 @@ st.caption("Descarga en modo unificado (1 Excel) o por sociedad (ZIP).")
 
 with st.expander("📘 Instrucciones rápidas"):
     st.markdown(
-        "- **Saesa**: Sociedad viene como letra (D/E/F/G/L/S/T) y se reemplaza por su RUT. Si no coincide, se elimina la fila.\n"
-        "- **Innova**: Solo se acepta Sociedad = P y se reemplaza por 77227565-K. El resto se elimina.\n"
-        "- **Parauco**: Se filtra por nombre sociedad en L (lista), pero la Sociedad del output se toma de K (RUT) y se limpia (sin puntos).\n"
-        "- **Unificado**: 1 Excel con columna 'Sociedad'.\n"
-        "- **Por sociedad**: ZIP con 1 Excel por Sociedad."
+        "- **Saesa**: Sociedad viene como letra (D/E/F/G/L/S/T) y se reemplaza por su **RUT pagadora**. Si no coincide, se elimina la fila.\n"
+        "- **Innova**: Solo se acepta Sociedad = P y se reemplaza por **RUT pagadora** 77227565-K. El resto se elimina.\n"
+        "- **Parauco**: Se filtra por nombre sociedad en L (lista), pero la **Rut pagadora** del output se toma de K (RUT) y se limpia (sin puntos).\n"
+        "- **Unificado**: 1 Excel con header **Rut pagadora**.\n"
+        "- **Por sociedad**: ZIP con 1 Excel por Rut pagadora."
     )
 
 now_str = datetime.now(CL_TZ).strftime("%Y_%m_%d_%H_%M_%S")
@@ -311,14 +322,15 @@ if archivo_saesa is not None:
         base_saesa = construir_base_saesa(df_saesa)
 
         if modo_saesa.startswith("Unificado"):
-            excel_bytes = dataframe_a_excel_bytes(base_saesa)
+            unificado_saesa = preparar_unificado(base_saesa)
+            excel_bytes = dataframe_a_excel_bytes(unificado_saesa)
             st.download_button(
                 label="⬇️ Descargar SAESA unificado",
                 data=excel_bytes,
                 file_name=f"confirmacion_saesa_unificado_{now_str}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
-            st.success(f"Listo ✅ Unificado SAESA: {len(base_saesa)} filas.")
+            st.success(f"Listo ✅ Unificado SAESA: {len(unificado_saesa)} filas.")
         else:
             dict_saesa = base_a_dict_por_sociedad(base_saesa, col_sociedad="Sociedad")
             zip_bytes = dataframes_a_zip(dict_saesa, "Data_SAESA")
@@ -348,14 +360,15 @@ if archivo_innova is not None:
         base_innova = construir_base_innova(df_innova)
 
         if modo_innova.startswith("Unificado"):
-            excel_bytes = dataframe_a_excel_bytes(base_innova)
+            unificado_innova = preparar_unificado(base_innova)
+            excel_bytes = dataframe_a_excel_bytes(unificado_innova)
             st.download_button(
                 label="⬇️ Descargar INNOVA unificado",
                 data=excel_bytes,
                 file_name=f"confirmacion_innova_unificado_{now_str}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
-            st.success(f"Listo ✅ Unificado INNOVA: {len(base_innova)} filas.")
+            st.success(f"Listo ✅ Unificado INNOVA: {len(unificado_innova)} filas.")
         else:
             dict_innova = base_a_dict_por_sociedad(base_innova, col_sociedad="Sociedad")
             zip_bytes = dataframes_a_zip(dict_innova, "Data_INNOVA")
@@ -385,14 +398,15 @@ if archivo_parauco is not None:
         base_parauco = construir_base_parauco(df_parauco)
 
         if modo_parauco.startswith("Unificado"):
-            excel_bytes = dataframe_a_excel_bytes(base_parauco)
+            unificado_parauco = preparar_unificado(base_parauco)
+            excel_bytes = dataframe_a_excel_bytes(unificado_parauco)
             st.download_button(
                 label="⬇️ Descargar Parauco unificado",
                 data=excel_bytes,
                 file_name=f"confirmacion_parauco_unificado_{now_str}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
-            st.success(f"Listo ✅ Unificado Parauco: {len(base_parauco)} filas.")
+            st.success(f"Listo ✅ Unificado Parauco: {len(unificado_parauco)} filas.")
         else:
             dict_parauco = base_a_dict_por_sociedad(base_parauco, col_sociedad="Sociedad")
             zip_bytes = dataframes_a_zip(dict_parauco, "Data_PARAUCO")
