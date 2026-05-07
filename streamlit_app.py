@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 CL_TZ = ZoneInfo("America/Santiago")
 
 REQ_COLS_BASE = {
-    "Acreedor",
+    "Proveedor",
     "Clase de documento",
     "Referencia",
     "Importe en moneda local",
@@ -176,7 +176,7 @@ def construir_base_saesa_like_sin_mapping(df: pd.DataFrame) -> pd.DataFrame:
         raise ValueError("No hay filas válidas después de filtrar referencias con '-'.")
 
     columnas_nuevas = {
-        "Acreedor": "Rut emisor",
+        "Proveedor": "Rut emisor",
         "Clase de documento": "Tipo de Documento",
         "Referencia": "Folio",
         "Importe en moneda local": "Monto a pagar",
