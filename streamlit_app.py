@@ -211,14 +211,21 @@ def construir_base_saesa_like_sin_mapping(df: pd.DataFrame) -> pd.DataFrame:
 # SAESA / INNOVA processors
 # ---------------------------
 def construir_base_saesa(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    # Limpieza específica SAESA: eliminar caracteres NO numéricos de la columna 'Referencia' (col. D)
+    # Ej.: "FA-12345" -> "12345"; "123/A" -> "123"; "ABC" -> "" (la fila se descartará luego por mask_ref_valida)
+    if "Referencia" in df.columns:
+        df["Referencia"] = (
+            df["Referencia"]
+            .astype(str)
+            .str.replace(r"\D", "", regex=True)
+        )
     base = construir_base_saesa_like_sin_mapping(df)
-
     # Sociedad letra -> RUT; inválidos se eliminan
     base["Sociedad"] = base["Sociedad"].astype(str).str.strip().str.upper()
     base["Sociedad"] = base["Sociedad"].map(SAESA_SOCIEDAD_A_RUT)
     base = base[base["Sociedad"].notna()].copy()
     base["Sociedad"] = base["Sociedad"].apply(normalizar_rut)
-
     if base.empty:
         raise ValueError("SAESA: no quedaron filas válidas luego de aplicar el mapping de sociedades.")
     return base
