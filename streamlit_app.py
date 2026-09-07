@@ -214,10 +214,13 @@ def construir_base_saesa(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     # Limpieza específica SAESA: eliminar caracteres NO numéricos de la columna 'Referencia' (col. D)
     # Ej.: "FA-12345" -> "12345"; "123/A" -> "123"; "ABC" -> "" (la fila se descartará luego por mask_ref_valida)
+    # El decimal se quita ANTES: si la columna se lee como float, "12345.0" perdería el punto
+    # y quedaría "123450" (un cero de más al final del folio).
     if "Referencia" in df.columns:
         df["Referencia"] = (
             df["Referencia"]
             .astype(str)
+            .str.replace(r"\.\d+$", "", regex=True)
             .str.replace(r"\D", "", regex=True)
         )
     base = construir_base_saesa_like_sin_mapping(df)
