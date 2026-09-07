@@ -14,9 +14,15 @@ REQ_COLS_BASE = {
     "Proveedor",
     "Clase de documento",
     "Referencia",
-    "Importe en moneda local",
+    "Valor de moneda de sociedad",
     "Vencimiento neto",
     "Sociedad",
+}
+
+# Columnas renombradas en los archivos de origen: nombre antiguo -> nombre actual.
+# Se aceptan ambos para que los archivos anteriores al cambio sigan funcionando.
+ALIAS_COLS = {
+    "Importe en moneda local": "Valor de moneda de sociedad",
 }
 
 SOCIEDADES_PARAUCO = {
@@ -155,6 +161,7 @@ def construir_base_saesa_like_sin_mapping(df: pd.DataFrame) -> pd.DataFrame:
     Sociedad, Rut emisor, Tipo de Documento, Folio, Monto a pagar, Fecha a pagar
     SIN aplicar reemplazo de Sociedad.
     """
+    df = df.rename(columns={ant: act for ant, act in ALIAS_COLS.items() if act not in df.columns})
     validar_columnas(df, REQ_COLS_BASE)
     df = df.copy()
 
@@ -179,7 +186,7 @@ def construir_base_saesa_like_sin_mapping(df: pd.DataFrame) -> pd.DataFrame:
         "Proveedor": "Rut emisor",
         "Clase de documento": "Tipo de Documento",
         "Referencia": "Folio",
-        "Importe en moneda local": "Monto a pagar",
+        "Valor de moneda de sociedad": "Monto a pagar",
         "Vencimiento neto": "Fecha a pagar",
     }
     df = df.rename(columns=columnas_nuevas)
